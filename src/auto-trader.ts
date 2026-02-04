@@ -105,42 +105,26 @@ async function getTopTrendingMemecoin(): Promise<TrendingToken | null> {
 // System Wallet Management
 // ============================================================================
 
-interface SystemWallet {
-  publicKey: string;
-  secretKey: string; // Base58 encoded
-}
-
 let systemWallet: Keypair | null = null;
 
-// Store wallet in a local file (in production, use database or secure vault)
-const WALLET_FILE = '/home/ubuntu/jupiter-terminal/.system-wallet.json';
-
+// Load wallet from environment variable (SYSTEM_WALLET_PRIVATE_KEY)
 async function getOrCreateSystemWallet(): Promise<Keypair> {
   if (systemWallet) {
     return systemWallet;
   }
   
+  const privateKey = process.env.SYSTEM_WALLET_PRIVATE_KEY;
+  
+  if (!privateKey) {
+    throw new Error('SYSTEM_WALLET_PRIVATE_KEY environment variable is not set');
+  }
+  
   try {
-    // Try to load existing wallet from file
-    const fs = await import('fs/promises');
-    const data = await fs.readFile(WALLET_FILE, 'utf-8');
-    const wallet: SystemWallet = JSON.parse(data);
-    systemWallet = Keypair.fromSecretKey(bs58.decode(wallet.secretKey));
-    console.log(`[WALLET] Loaded existing system wallet: ${systemWallet.publicKey.toBase58()}`);
+    systemWallet = Keypair.fromSecretKey(bs58.decode(privateKey));
+    console.log(`[WALLET] Loaded system wallet from env: ${systemWallet.publicKey.toBase58()}`);
     return systemWallet;
-  } catch {
-    // Create new wallet if file doesn't exist
-    systemWallet = Keypair.generate();
-    const wallet: SystemWallet = {
-      publicKey: systemWallet.publicKey.toBase58(),
-      secretKey: bs58.encode(systemWallet.secretKey),
-    };
-    
-    // Save to file
-    const fs = await import('fs/promises');
-    await fs.writeFile(WALLET_FILE, JSON.stringify(wallet, null, 2));
-    console.log(`[WALLET] Created new system wallet: ${systemWallet.publicKey.toBase58()}`);
-    return systemWallet;
+  } catch (error) {
+    throw new Error(`Failed to load wallet from SYSTEM_WALLET_PRIVATE_KEY: ${error}`);
   }
 }
 
