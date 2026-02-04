@@ -57,13 +57,20 @@ export const createNonceAccountsInputSchema = z.object({
   authorityPublicKey: z.string().optional(), // Defaults to payer
 });
 
+// Type definitions for API responses
+interface JupiterSwapResponse {
+  swapTransaction?: string;
+  lastValidBlockHeight?: number;
+  simulationError?: unknown;
+}
+
 /**
  * Get Jupiter quote for a swap
  * Returns { success: true, quote } or { success: false, error }
  */
 export async function getJupiterQuote(input: z.infer<typeof quoteInputSchema>): Promise<{
   success: boolean;
-  quote?: any;
+  quote?: unknown;
   error?: string;
 }> {
   try {
@@ -86,7 +93,7 @@ export async function getJupiterQuote(input: z.infer<typeof quoteInputSchema>): 
       return { success: false, error: `Jupiter quote failed: ${error}` };
     }
 
-    const quote = await response.json();
+    const quote = await response.json() as { outAmount?: string };
     
     // Check if quote has required fields
     if (!quote || !quote.outAmount) {
@@ -147,15 +154,15 @@ export async function getFeeSwapTransaction(inputMint: string, amount: string, u
     return { swapTransaction: null, error: `Swap failed: ${error}` };
   }
 
-  const result = await swapResponse.json();
+  const result = await swapResponse.json() as JupiterSwapResponse;
   
   if (result.simulationError) {
     console.warn('Fee swap simulation warning:', JSON.stringify(result.simulationError));
   }
   
   return {
-    swapTransaction: result.swapTransaction,
-    lastValidBlockHeight: result.lastValidBlockHeight,
+    swapTransaction: result.swapTransaction ?? null,
+    lastValidBlockHeight: result.lastValidBlockHeight ?? null,
     error: null,
   };
 }
@@ -164,7 +171,7 @@ export async function getFeeSwapTransaction(inputMint: string, amount: string, u
  * Get Jupiter swap transaction
  * Returns { success: true, transaction } or { success: false, error }
  */
-export async function getJupiterSwapTransaction(quoteResponse: any, userPublicKey: string): Promise<{
+export async function getJupiterSwapTransaction(quoteResponse: unknown, userPublicKey: string): Promise<{
   success: boolean;
   transaction?: string;
   error?: string;
@@ -190,7 +197,7 @@ export async function getJupiterSwapTransaction(quoteResponse: any, userPublicKe
       return { success: false, error: `Jupiter swap failed: ${error}` };
     }
 
-    const result = await response.json();
+    const result = await response.json() as JupiterSwapResponse;
     
     // Log simulation error but don't fail - let the transaction try on-chain
     if (result.simulationError) {
@@ -246,7 +253,7 @@ export async function simulateTransaction(input: z.infer<typeof simulateInputSch
     return {
       success: simulation.err === null,
       logs: simulation.logs || [],
-      unitsConsumed: simulation.unitsConsumed || null,
+      unitsConsumed: simulation.unitsConsumed ?? null,
       error: simulation.err ? JSON.stringify(simulation.err) : null,
       balanceChanges: [], // Would need to parse logs for detailed changes
     };
@@ -420,10 +427,10 @@ export async function checkMeteoraPoolExists(tokenA: string, tokenB: string): Pr
   try {
     // Query Meteora API for existing pools
     const response = await fetch(`https://dlmm-api.meteora.ag/pair/all`);
-    const pools = await response.json();
+    const pools = await response.json() as Array<{ mint_x: string; mint_y: string; address: string }>;
     
     // Search for a pool with the token pair
-    const pool = pools.find((p: any) => 
+    const pool = pools.find((p) => 
       (p.mint_x === tokenA && p.mint_y === tokenB) ||
       (p.mint_x === tokenB && p.mint_y === tokenA)
     );
@@ -457,19 +464,31 @@ export async function getTokenMetadata(mint: string) {
       }),
     });
 
-    const result = await response.json();
+    interface HeliusAssetResponse {
+      error?: unknown;
+      result?: {
+        content?: {
+          metadata?: { name?: string; symbol?: string };
+          links?: { image?: string };
+          files?: Array<{ uri?: string }>;
+        };
+        token_info?: { decimals?: number };
+      };
+    }
+
+    const data = await response.json() as HeliusAssetResponse;
     
-    if (result.error) {
+    if (data.error) {
       return null;
     }
 
-    const asset = result.result;
+    const asset = data.result;
     return {
       mint,
-      name: asset.content?.metadata?.name || 'Unknown',
-      symbol: asset.content?.metadata?.symbol || '???',
-      decimals: asset.token_info?.decimals || 9,
-      logoURI: asset.content?.links?.image || asset.content?.files?.[0]?.uri || null,
+      name: asset?.content?.metadata?.name || 'Unknown',
+      symbol: asset?.content?.metadata?.symbol || '???',
+      decimals: asset?.token_info?.decimals || 9,
+      logoURI: asset?.content?.links?.image || asset?.content?.files?.[0]?.uri || null,
     };
   } catch (error) {
     console.error('Error fetching token metadata:', error);
