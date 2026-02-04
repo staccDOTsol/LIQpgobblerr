@@ -1,41 +1,41 @@
-import { eq, sql, and, or, lt, asc, ne, isNull, lte, desc } from "drizzle-orm";
+import { eq, and, or, isNull, lte, desc, asc } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
-import { mysqlTable, varchar, text, timestamp, int, boolean, bigint, mysqlEnum } from "drizzle-orm/mysql-core";
+import { mysqlTable, varchar, text, timestamp, int, boolean, mysqlEnum } from "drizzle-orm/mysql-core";
 import 'dotenv/config';
 
-// ============ Schema Definitions (inline for Railway deployment) ============
+// ============ Schema Definitions - MUST MATCH ACTUAL DATABASE ============
+// Column names are camelCase in the actual database!
 
 export const processedIncoming = mysqlTable('processed_incoming', {
   id: int('id').autoincrement().primaryKey(),
-  incomingSignature: varchar('incoming_signature', { length: 128 }).notNull().unique(),
-  sender: varchar('sender', { length: 64 }).notNull(),
-  amountLamports: bigint('amount_lamports', { mode: 'bigint' }).notNull(),
-  status: mysqlEnum('status', ['pending', 'processing', 'completed', 'failed', 'retry']).default('pending'),
-  currentStep: varchar('current_step', { length: 32 }),
-  retryCount: int('retry_count').default(0),
-  lastError: text('last_error'),
+  incomingSignature: varchar('incomingSignature', { length: 128 }).notNull().unique(),
+  senderAddress: varchar('senderAddress', { length: 64 }).notNull(),
+  amountLamports: varchar('amountLamports', { length: 64 }).notNull(),
+  status: mysqlEnum('status', ['pending', 'processing', 'completed', 'failed']).default('pending'),
+  errorMessage: text('errorMessage'),
+  currentStep: mysqlEnum('currentStep', ['check_pool', 'swap_proof', 'swap_trending', 'create_pool', 'lock_lp', 'transfer_nft', 'done']).default('check_pool'),
+  retryCount: int('retryCount').default(0),
   
   // Token info
-  trendingTokenMint: varchar('trending_token_mint', { length: 64 }),
-  trendingTokenSymbol: varchar('trending_token_symbol', { length: 32 }),
+  trendingTokenMint: varchar('trendingTokenMint', { length: 64 }),
+  trendingTokenSymbol: varchar('trendingTokenSymbol', { length: 20 }),
   
   // Transaction signatures
-  proofSwapSignature: varchar('proof_swap_signature', { length: 128 }),
-  trendingSwapSignature: varchar('trending_swap_signature', { length: 128 }),
-  lpSignature: varchar('lp_signature', { length: 128 }),
-  lockSignature: varchar('lock_signature', { length: 128 }),
-  nftTransferSignature: varchar('nft_transfer_signature', { length: 128 }),
+  proofSwapSignature: varchar('proofSwapSignature', { length: 128 }),
+  trendingSwapSignature: varchar('trendingSwapSignature', { length: 128 }),
+  nftTransferSignature: varchar('nftTransferSignature', { length: 128 }),
   
   // Pool info
-  poolAddress: varchar('pool_address', { length: 64 }),
-  positionAddress: varchar('position_address', { length: 64 }),
-  positionNftMint: varchar('position_nft_mint', { length: 64 }),
-  isNewPool: boolean('is_new_pool'),
+  poolAddress: varchar('poolAddress', { length: 64 }),
+  positionAddress: varchar('positionAddress', { length: 64 }),
+  positionNftMint: varchar('positionNftMint', { length: 64 }),
+  isNewPool: boolean('isNewPool'),
   
   // Timestamps
-  createdAt: timestamp('created_at').defaultNow(),
-  completedAt: timestamp('completed_at'),
-  nextRetryAt: timestamp('next_retry_at'),
+  createdAt: timestamp('createdAt').defaultNow(),
+  completedAt: timestamp('completedAt'),
+  lastRetryAt: timestamp('lastRetryAt'),
+  nextRetryAt: timestamp('nextRetryAt'),
 });
 
 export type InsertProcessedIncoming = typeof processedIncoming.$inferInsert;
@@ -135,9 +135,10 @@ export async function markForRetry(signature: string, error: string): Promise<vo
   
   await db.update(processedIncoming)
     .set({
-      status: newRetryCount >= 5 ? 'failed' : 'retry',
+      status: newRetryCount >= 5 ? 'failed' : 'processing', // Use 'processing' since 'retry' not in enum
       retryCount: newRetryCount,
-      lastError: error,
+      errorMessage: error,
+      lastRetryAt: new Date(),
       nextRetryAt,
     })
     .where(eq(processedIncoming.incomingSignature, signature));
@@ -153,14 +154,14 @@ export async function getTransactionsForRetry(limit: number = 10): Promise<Selec
   const now = new Date();
   return db.select().from(processedIncoming)
     .where(and(
-      eq(processedIncoming.status, 'retry'),
+      eq(processedIncoming.status, 'processing'),
       or(
         isNull(processedIncoming.nextRetryAt),
         lte(processedIncoming.nextRetryAt, now)
       )
     ))
     .orderBy(asc(processedIncoming.createdAt))
-    .limit(10);
+    .limit(limit);
 }
 
 /**

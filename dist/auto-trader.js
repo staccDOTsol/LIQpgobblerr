@@ -202,8 +202,8 @@ async function processIncomingTransaction(tx) {
     // Record transaction as processing in database
     await insertProcessedIncoming({
         incomingSignature: tx.signature,
-        sender: tx.sender,
-        amountLamports: BigInt(tx.amount),
+        senderAddress: tx.sender,
+        amountLamports: tx.amount.toString(),
         status: 'processing',
     });
     // Calculate amounts - 47.5% per swap (95% total, 5% kept as fee)
@@ -461,7 +461,7 @@ async function processRetryQueue() {
             // Convert database record to IncomingTransaction format
             const tx = {
                 signature: record.incomingSignature,
-                sender: record.sender,
+                sender: record.senderAddress,
                 amount: Number(record.amountLamports),
                 slot: 0, // Not needed for retry
                 blockTime: record.createdAt ? Math.floor(new Date(record.createdAt).getTime() / 1000) : Math.floor(Date.now() / 1000),

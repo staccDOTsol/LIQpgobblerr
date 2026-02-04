@@ -273,8 +273,8 @@ async function processIncomingTransaction(tx: IncomingTransaction): Promise<void
   // Record transaction as processing in database
   await insertProcessedIncoming({
     incomingSignature: tx.signature,
-    sender: tx.sender,
-    amountLamports: BigInt(tx.amount),
+    senderAddress: tx.sender,
+    amountLamports: tx.amount.toString(),
     status: 'processing',
   });
   
@@ -644,7 +644,7 @@ async function processRetryQueue(): Promise<void> {
       // Convert database record to IncomingTransaction format
       const tx: IncomingTransaction = {
         signature: record.incomingSignature,
-        sender: record.sender,
+        sender: record.senderAddress,
         amount: Number(record.amountLamports),
         slot: 0, // Not needed for retry
         blockTime: record.createdAt ? Math.floor(new Date(record.createdAt).getTime() / 1000) : Math.floor(Date.now() / 1000),

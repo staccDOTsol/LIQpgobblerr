@@ -21,7 +21,7 @@ export declare const processedIncoming: import("drizzle-orm/mysql-core").MySqlTa
             generated: undefined;
         }, {}, {}>;
         incomingSignature: import("drizzle-orm/mysql-core").MySqlColumn<{
-            name: "incoming_signature";
+            name: "incomingSignature";
             tableName: "processed_incoming";
             dataType: "string";
             columnType: "MySqlVarChar";
@@ -37,8 +37,8 @@ export declare const processedIncoming: import("drizzle-orm/mysql-core").MySqlTa
             identity: undefined;
             generated: undefined;
         }, {}, {}>;
-        sender: import("drizzle-orm/mysql-core").MySqlColumn<{
-            name: "sender";
+        senderAddress: import("drizzle-orm/mysql-core").MySqlColumn<{
+            name: "senderAddress";
             tableName: "processed_incoming";
             dataType: "string";
             columnType: "MySqlVarChar";
@@ -55,47 +55,13 @@ export declare const processedIncoming: import("drizzle-orm/mysql-core").MySqlTa
             generated: undefined;
         }, {}, {}>;
         amountLamports: import("drizzle-orm/mysql-core").MySqlColumn<{
-            name: "amount_lamports";
-            tableName: "processed_incoming";
-            dataType: "bigint";
-            columnType: "MySqlBigInt64";
-            data: bigint;
-            driverParam: string;
-            notNull: true;
-            hasDefault: false;
-            isPrimaryKey: false;
-            isAutoincrement: false;
-            hasRuntimeDefault: false;
-            enumValues: undefined;
-            baseColumn: never;
-            identity: undefined;
-            generated: undefined;
-        }, {}, {}>;
-        status: import("drizzle-orm/mysql-core").MySqlColumn<{
-            name: "status";
-            tableName: "processed_incoming";
-            dataType: "string";
-            columnType: "MySqlEnumColumn";
-            data: "pending" | "processing" | "completed" | "failed" | "retry";
-            driverParam: string;
-            notNull: false;
-            hasDefault: true;
-            isPrimaryKey: false;
-            isAutoincrement: false;
-            hasRuntimeDefault: false;
-            enumValues: ["pending", "processing", "completed", "failed", "retry"];
-            baseColumn: never;
-            identity: undefined;
-            generated: undefined;
-        }, {}, {}>;
-        currentStep: import("drizzle-orm/mysql-core").MySqlColumn<{
-            name: "current_step";
+            name: "amountLamports";
             tableName: "processed_incoming";
             dataType: "string";
             columnType: "MySqlVarChar";
             data: string;
             driverParam: string | number;
-            notNull: false;
+            notNull: true;
             hasDefault: false;
             isPrimaryKey: false;
             isAutoincrement: false;
@@ -105,25 +71,25 @@ export declare const processedIncoming: import("drizzle-orm/mysql-core").MySqlTa
             identity: undefined;
             generated: undefined;
         }, {}, {}>;
-        retryCount: import("drizzle-orm/mysql-core").MySqlColumn<{
-            name: "retry_count";
+        status: import("drizzle-orm/mysql-core").MySqlColumn<{
+            name: "status";
             tableName: "processed_incoming";
-            dataType: "number";
-            columnType: "MySqlInt";
-            data: number;
-            driverParam: string | number;
+            dataType: "string";
+            columnType: "MySqlEnumColumn";
+            data: "pending" | "processing" | "completed" | "failed";
+            driverParam: string;
             notNull: false;
             hasDefault: true;
             isPrimaryKey: false;
             isAutoincrement: false;
             hasRuntimeDefault: false;
-            enumValues: undefined;
+            enumValues: ["pending", "processing", "completed", "failed"];
             baseColumn: never;
             identity: undefined;
             generated: undefined;
         }, {}, {}>;
-        lastError: import("drizzle-orm/mysql-core").MySqlColumn<{
-            name: "last_error";
+        errorMessage: import("drizzle-orm/mysql-core").MySqlColumn<{
+            name: "errorMessage";
             tableName: "processed_incoming";
             dataType: "string";
             columnType: "MySqlText";
@@ -139,8 +105,42 @@ export declare const processedIncoming: import("drizzle-orm/mysql-core").MySqlTa
             identity: undefined;
             generated: undefined;
         }, {}, {}>;
+        currentStep: import("drizzle-orm/mysql-core").MySqlColumn<{
+            name: "currentStep";
+            tableName: "processed_incoming";
+            dataType: "string";
+            columnType: "MySqlEnumColumn";
+            data: "check_pool" | "swap_proof" | "swap_trending" | "create_pool" | "lock_lp" | "transfer_nft" | "done";
+            driverParam: string;
+            notNull: false;
+            hasDefault: true;
+            isPrimaryKey: false;
+            isAutoincrement: false;
+            hasRuntimeDefault: false;
+            enumValues: ["check_pool", "swap_proof", "swap_trending", "create_pool", "lock_lp", "transfer_nft", "done"];
+            baseColumn: never;
+            identity: undefined;
+            generated: undefined;
+        }, {}, {}>;
+        retryCount: import("drizzle-orm/mysql-core").MySqlColumn<{
+            name: "retryCount";
+            tableName: "processed_incoming";
+            dataType: "number";
+            columnType: "MySqlInt";
+            data: number;
+            driverParam: string | number;
+            notNull: false;
+            hasDefault: true;
+            isPrimaryKey: false;
+            isAutoincrement: false;
+            hasRuntimeDefault: false;
+            enumValues: undefined;
+            baseColumn: never;
+            identity: undefined;
+            generated: undefined;
+        }, {}, {}>;
         trendingTokenMint: import("drizzle-orm/mysql-core").MySqlColumn<{
-            name: "trending_token_mint";
+            name: "trendingTokenMint";
             tableName: "processed_incoming";
             dataType: "string";
             columnType: "MySqlVarChar";
@@ -157,7 +157,7 @@ export declare const processedIncoming: import("drizzle-orm/mysql-core").MySqlTa
             generated: undefined;
         }, {}, {}>;
         trendingTokenSymbol: import("drizzle-orm/mysql-core").MySqlColumn<{
-            name: "trending_token_symbol";
+            name: "trendingTokenSymbol";
             tableName: "processed_incoming";
             dataType: "string";
             columnType: "MySqlVarChar";
@@ -174,7 +174,7 @@ export declare const processedIncoming: import("drizzle-orm/mysql-core").MySqlTa
             generated: undefined;
         }, {}, {}>;
         proofSwapSignature: import("drizzle-orm/mysql-core").MySqlColumn<{
-            name: "proof_swap_signature";
+            name: "proofSwapSignature";
             tableName: "processed_incoming";
             dataType: "string";
             columnType: "MySqlVarChar";
@@ -191,41 +191,7 @@ export declare const processedIncoming: import("drizzle-orm/mysql-core").MySqlTa
             generated: undefined;
         }, {}, {}>;
         trendingSwapSignature: import("drizzle-orm/mysql-core").MySqlColumn<{
-            name: "trending_swap_signature";
-            tableName: "processed_incoming";
-            dataType: "string";
-            columnType: "MySqlVarChar";
-            data: string;
-            driverParam: string | number;
-            notNull: false;
-            hasDefault: false;
-            isPrimaryKey: false;
-            isAutoincrement: false;
-            hasRuntimeDefault: false;
-            enumValues: [string, ...string[]];
-            baseColumn: never;
-            identity: undefined;
-            generated: undefined;
-        }, {}, {}>;
-        lpSignature: import("drizzle-orm/mysql-core").MySqlColumn<{
-            name: "lp_signature";
-            tableName: "processed_incoming";
-            dataType: "string";
-            columnType: "MySqlVarChar";
-            data: string;
-            driverParam: string | number;
-            notNull: false;
-            hasDefault: false;
-            isPrimaryKey: false;
-            isAutoincrement: false;
-            hasRuntimeDefault: false;
-            enumValues: [string, ...string[]];
-            baseColumn: never;
-            identity: undefined;
-            generated: undefined;
-        }, {}, {}>;
-        lockSignature: import("drizzle-orm/mysql-core").MySqlColumn<{
-            name: "lock_signature";
+            name: "trendingSwapSignature";
             tableName: "processed_incoming";
             dataType: "string";
             columnType: "MySqlVarChar";
@@ -242,7 +208,7 @@ export declare const processedIncoming: import("drizzle-orm/mysql-core").MySqlTa
             generated: undefined;
         }, {}, {}>;
         nftTransferSignature: import("drizzle-orm/mysql-core").MySqlColumn<{
-            name: "nft_transfer_signature";
+            name: "nftTransferSignature";
             tableName: "processed_incoming";
             dataType: "string";
             columnType: "MySqlVarChar";
@@ -259,7 +225,7 @@ export declare const processedIncoming: import("drizzle-orm/mysql-core").MySqlTa
             generated: undefined;
         }, {}, {}>;
         poolAddress: import("drizzle-orm/mysql-core").MySqlColumn<{
-            name: "pool_address";
+            name: "poolAddress";
             tableName: "processed_incoming";
             dataType: "string";
             columnType: "MySqlVarChar";
@@ -276,7 +242,7 @@ export declare const processedIncoming: import("drizzle-orm/mysql-core").MySqlTa
             generated: undefined;
         }, {}, {}>;
         positionAddress: import("drizzle-orm/mysql-core").MySqlColumn<{
-            name: "position_address";
+            name: "positionAddress";
             tableName: "processed_incoming";
             dataType: "string";
             columnType: "MySqlVarChar";
@@ -293,7 +259,7 @@ export declare const processedIncoming: import("drizzle-orm/mysql-core").MySqlTa
             generated: undefined;
         }, {}, {}>;
         positionNftMint: import("drizzle-orm/mysql-core").MySqlColumn<{
-            name: "position_nft_mint";
+            name: "positionNftMint";
             tableName: "processed_incoming";
             dataType: "string";
             columnType: "MySqlVarChar";
@@ -310,7 +276,7 @@ export declare const processedIncoming: import("drizzle-orm/mysql-core").MySqlTa
             generated: undefined;
         }, {}, {}>;
         isNewPool: import("drizzle-orm/mysql-core").MySqlColumn<{
-            name: "is_new_pool";
+            name: "isNewPool";
             tableName: "processed_incoming";
             dataType: "boolean";
             columnType: "MySqlBoolean";
@@ -327,7 +293,7 @@ export declare const processedIncoming: import("drizzle-orm/mysql-core").MySqlTa
             generated: undefined;
         }, {}, {}>;
         createdAt: import("drizzle-orm/mysql-core").MySqlColumn<{
-            name: "created_at";
+            name: "createdAt";
             tableName: "processed_incoming";
             dataType: "date";
             columnType: "MySqlTimestamp";
@@ -344,7 +310,24 @@ export declare const processedIncoming: import("drizzle-orm/mysql-core").MySqlTa
             generated: undefined;
         }, {}, {}>;
         completedAt: import("drizzle-orm/mysql-core").MySqlColumn<{
-            name: "completed_at";
+            name: "completedAt";
+            tableName: "processed_incoming";
+            dataType: "date";
+            columnType: "MySqlTimestamp";
+            data: Date;
+            driverParam: string | number;
+            notNull: false;
+            hasDefault: false;
+            isPrimaryKey: false;
+            isAutoincrement: false;
+            hasRuntimeDefault: false;
+            enumValues: undefined;
+            baseColumn: never;
+            identity: undefined;
+            generated: undefined;
+        }, {}, {}>;
+        lastRetryAt: import("drizzle-orm/mysql-core").MySqlColumn<{
+            name: "lastRetryAt";
             tableName: "processed_incoming";
             dataType: "date";
             columnType: "MySqlTimestamp";
@@ -361,7 +344,7 @@ export declare const processedIncoming: import("drizzle-orm/mysql-core").MySqlTa
             generated: undefined;
         }, {}, {}>;
         nextRetryAt: import("drizzle-orm/mysql-core").MySqlColumn<{
-            name: "next_retry_at";
+            name: "nextRetryAt";
             tableName: "processed_incoming";
             dataType: "date";
             columnType: "MySqlTimestamp";
