@@ -1,0 +1,759 @@
+/**
+ * Meteora DAMM V2 Integration
+ * Real implementation using @meteora-ag/cp-amm-sdk
+ */
+
+import { Connection, PublicKey, Keypair, Transaction, VersionedTransaction, TransactionMessage } from '@solana/web3.js';
+import { 
+  TOKEN_PROGRAM_ID,
+  TOKEN_2022_PROGRAM_ID,
+  getAssociatedTokenAddressSync,
+  createAssociatedTokenAccountIdempotentInstruction,
+  ASSOCIATED_TOKEN_PROGRAM_ID,
+} from '@solana/spl-token';
+import BN from 'bn.js';
+
+// Import Meteora SDK
+import { CpAmm, getSqrtPriceFromPrice, derivePoolAddress, derivePositionAddress, derivePositionNftAccount, getLiquidityDeltaFromAmountA } from '@meteora-ag/cp-amm-sdk';
+
+// Helius RPC endpoint
+const HELIUS_API_KEY = process.env.HELIUS_API_KEY || '0d4b4fd6-c2fc-4f55-b615-a23bab1ffc85';
+const HELIUS_RPC_URL = `https://mainnet.helius-rpc.com/?api-key=${HELIUS_API_KEY}`;
+const connection = new Connection(HELIUS_RPC_URL, {
+  commitment: 'confirmed',
+  confirmTransactionInitialTimeout: 30000,
+});
+
+console.log('[METEORA] Using RPC URL:', HELIUS_RPC_URL.substring(0, 50) + '...');
+
+// Timeout helper
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, operation: string): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) => 
+      setTimeout(() => reject(new Error(`${operation} timed out after ${timeoutMs}ms`)), timeoutMs)
+    )
+  ]);
+}
+
+// Meteora DAMM V2 Program ID
+const DAMM_V2_PROGRAM_ID = new PublicKey('cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG');
+
+// Meteora DAMM V2 config - permissionless config
+export const METEORA_STANDARD_CONFIG = new PublicKey('TBuzuEMMQizTjpZhRLaUPavALhZmD8U1hwiw1pWSCSq');
+
+// Lazy initialization of CpAmm SDK
+let cpAmmInstance: CpAmm | null = null;
+let sdkInitialized = false;
+let warmupPromise: Promise<void> | null = null;
+
+export function getCpAmm(): CpAmm {
+  if (!cpAmmInstance) {
+    console.log('[METEORA] Initializing CpAmm SDK...');
+    const startTime = Date.now();
+    cpAmmInstance = new CpAmm(connection);
+    console.log(`[METEORA] CpAmm SDK initialized in ${Date.now() - startTime}ms`);
+  }
+  return cpAmmInstance;
+}
+
+// Warmup function
+export async function warmupMeteoraSDK(): Promise<void> {
+  if (sdkInitialized) return;
+  if (warmupPromise) return warmupPromise;
+  
+  console.log('[METEORA] Warming up SDK...');
+  const startTime = Date.now();
+  
+  warmupPromise = (async () => {
+    try {
+      const cpAmm = getCpAmm();
+      const configs = await cpAmm.getAllConfigs();
+      console.log(`[METEORA] SDK warmup complete in ${Date.now() - startTime}ms, found ${configs.length} configs`);
+      sdkInitialized = true;
+    } catch (error) {
+      console.error('[METEORA] SDK warmup failed:', error);
+    }
+  })();
+  
+  return warmupPromise;
+}
+
+// Wait for SDK to be ready
+export async function waitForSDKReady(timeoutMs: number = 10000): Promise<boolean> {
+  if (sdkInitialized) return true;
+  
+  if (!warmupPromise) {
+    warmupMeteoraSDK();
+  }
+  
+  const startTime = Date.now();
+  while (!sdkInitialized && (Date.now() - startTime) < timeoutMs) {
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  
+  return sdkInitialized;
+}
+
+// Auto-warmup on module load
+setTimeout(() => {
+  warmupMeteoraSDK().catch(console.error);
+}, 100);
+
+/**
+ * Convert legacy Transaction to VersionedTransaction and serialize as base64
+ */
+async function serializeTransaction(
+  tx: Transaction, 
+  payer: PublicKey, 
+  signers: Keypair[] = []
+): Promise<string> {
+  console.log('[serializeTransaction] Starting...');
+  console.log('[serializeTransaction] Instructions count:', tx.instructions.length);
+  
+  try {
+    const { blockhash } = await connection.getLatestBlockhash();
+    
+    const messageV0 = new TransactionMessage({
+      payerKey: payer,
+      recentBlockhash: blockhash,
+      instructions: tx.instructions,
+    }).compileToV0Message();
+    
+    const versionedTx = new VersionedTransaction(messageV0);
+    
+    if (signers.length > 0) {
+      versionedTx.sign(signers);
+      console.log(`Server signed transaction with ${signers.length} signer(s)`);
+    }
+    
+    const serialized = versionedTx.serialize();
+    return Buffer.from(serialized).toString('base64');
+  } catch (error) {
+    console.error('[serializeTransaction] Error:', error);
+    throw error;
+  }
+}
+
+/**
+ * Detect which token program a mint belongs to
+ */
+async function getTokenProgramForMint(mint: PublicKey): Promise<PublicKey> {
+  try {
+    const accountInfo = await connection.getAccountInfo(mint);
+    if (!accountInfo) {
+      return TOKEN_PROGRAM_ID;
+    }
+    
+    const owner = accountInfo.owner;
+    if (owner.equals(TOKEN_2022_PROGRAM_ID)) {
+      return TOKEN_2022_PROGRAM_ID;
+    } else {
+      return TOKEN_PROGRAM_ID;
+    }
+  } catch (error) {
+    return TOKEN_PROGRAM_ID;
+  }
+}
+
+/**
+ * Get associated token address with correct program ID
+ */
+export async function getAssociatedTokenAddressForMint(
+  mint: PublicKey,
+  owner: PublicKey
+): Promise<{ ata: PublicKey; tokenProgram: PublicKey }> {
+  const tokenProgram = await getTokenProgramForMint(mint);
+  const ata = getAssociatedTokenAddressSync(
+    mint,
+    owner,
+    false,
+    tokenProgram,
+    ASSOCIATED_TOKEN_PROGRAM_ID
+  );
+  return { ata, tokenProgram };
+}
+
+/**
+ * Create ATA instruction with correct program ID
+ */
+export function createAtaInstructionForMint(
+  payer: PublicKey,
+  ata: PublicKey,
+  owner: PublicKey,
+  mint: PublicKey,
+  tokenProgram: PublicKey
+) {
+  return createAssociatedTokenAccountIdempotentInstruction(
+    payer,
+    ata,
+    owner,
+    mint,
+    tokenProgram,
+    ASSOCIATED_TOKEN_PROGRAM_ID
+  );
+}
+
+/**
+ * Find existing pool for token pair
+ */
+export async function findPool(tokenAMint: string, tokenBMint: string): Promise<{
+  exists: boolean;
+  poolAddress: string | null;
+  poolState: any | null;
+}> {
+  const POOL_SEARCH_TIMEOUT = 15000;
+  
+  try {
+    const cpAmm = getCpAmm();
+    
+    const tokenA = new PublicKey(tokenAMint);
+    const tokenB = new PublicKey(tokenBMint);
+    
+    console.log('[findPool] Searching for pool with tokens:', tokenAMint, tokenBMint);
+    const searchStart = Date.now();
+    
+    // Method 1: Try to fetch pools by tokenA mint
+    try {
+      const poolsByTokenA = await withTimeout(
+        cpAmm.fetchPoolStatesByTokenAMint(tokenA),
+        POOL_SEARCH_TIMEOUT,
+        'fetchPoolStatesByTokenAMint(tokenA)'
+      );
+      console.log(`[findPool] Found ${poolsByTokenA.length} pools with tokenA as base (${Date.now() - searchStart}ms)`);
+      
+      for (const pool of poolsByTokenA) {
+        if (pool.account.tokenBMint.equals(tokenB)) {
+          console.log('Found matching pool:', pool.publicKey.toBase58());
+          return {
+            exists: true,
+            poolAddress: pool.publicKey.toBase58(),
+            poolState: pool.account,
+          };
+        }
+      }
+    } catch (e) {
+      console.log('Error fetching pools by tokenA:', e);
+    }
+    
+    // Method 2: Try with tokens reversed
+    try {
+      const poolsByTokenB = await withTimeout(
+        cpAmm.fetchPoolStatesByTokenAMint(tokenB),
+        POOL_SEARCH_TIMEOUT,
+        'fetchPoolStatesByTokenAMint(tokenB)'
+      );
+      console.log(`[findPool] Found ${poolsByTokenB.length} pools with tokenB as base (${Date.now() - searchStart}ms)`);
+      
+      for (const pool of poolsByTokenB) {
+        if (pool.account.tokenBMint.equals(tokenA)) {
+          console.log('Found matching pool (reversed):', pool.publicKey.toBase58());
+          return {
+            exists: true,
+            poolAddress: pool.publicKey.toBase58(),
+            poolState: pool.account,
+          };
+        }
+      }
+    } catch (e) {
+      console.log('Error fetching pools by tokenB:', e);
+    }
+    
+    // Method 3: Fallback to derivePoolAddress
+    console.log('No pool found via search, trying derivation with standard config...');
+    const derivedPoolAddress = derivePoolAddress(METEORA_STANDARD_CONFIG, tokenA, tokenB);
+    
+    try {
+      const exists = await cpAmm.isPoolExist(derivedPoolAddress);
+      if (exists) {
+        const poolState = await cpAmm.fetchPoolState(derivedPoolAddress);
+        console.log('Found pool via derivation:', derivedPoolAddress.toBase58());
+        return {
+          exists: true,
+          poolAddress: derivedPoolAddress.toBase58(),
+          poolState: poolState,
+        };
+      }
+    } catch {
+      // Pool doesn't exist with this token order
+    }
+    
+    // Try reversed order
+    const derivedPoolAddressReversed = derivePoolAddress(METEORA_STANDARD_CONFIG, tokenB, tokenA);
+    try {
+      const exists = await cpAmm.isPoolExist(derivedPoolAddressReversed);
+      if (exists) {
+        const poolState = await cpAmm.fetchPoolState(derivedPoolAddressReversed);
+        console.log('Found pool via derivation (reversed):', derivedPoolAddressReversed.toBase58());
+        return {
+          exists: true,
+          poolAddress: derivedPoolAddressReversed.toBase58(),
+          poolState: poolState,
+        };
+      }
+    } catch {
+      // Pool doesn't exist
+    }
+    
+    console.log('No existing pool found for token pair');
+    return {
+      exists: false,
+      poolAddress: null,
+      poolState: null,
+    };
+  } catch (error) {
+    console.error('Error finding pool:', error);
+    return {
+      exists: false,
+      poolAddress: null,
+      poolState: null,
+    };
+  }
+}
+
+/**
+ * Get token decimals from mint
+ */
+async function getTokenDecimals(mint: PublicKey): Promise<number> {
+  try {
+    const info = await connection.getParsedAccountInfo(mint);
+    return (info.value?.data as any)?.parsed?.info?.decimals || 9;
+  } catch {
+    return 9;
+  }
+}
+
+/**
+ * Build transaction to create a new pool with initial liquidity
+ */
+export async function buildCreatePoolTransaction(
+  tokenAMint: string,
+  tokenBMint: string,
+  tokenAAmount: string,
+  tokenBAmount: string,
+  userPublicKey: string,
+  initialPrice: number,
+  lockLiquidity: boolean = false
+): Promise<{
+  success: boolean;
+  transaction: string | null;
+  poolAddress: string | null;
+  positionAddress: string | null;
+  positionNftMint?: string;
+  needsClientSigning: boolean;
+  error: string | null;
+}> {
+  try {
+    const cpAmm = getCpAmm();
+    
+    const user = new PublicKey(userPublicKey);
+    const tokenA = new PublicKey(tokenAMint);
+    const tokenB = new PublicKey(tokenBMint);
+    
+    const positionNftMint = Keypair.generate();
+    const positionNftPubkey = positionNftMint.publicKey;
+    console.log('Generated server position NFT mint:', positionNftPubkey.toBase58());
+    
+    const tokenADecimals = await getTokenDecimals(tokenA);
+    const tokenBDecimals = await getTokenDecimals(tokenB);
+    
+    const sqrtPrice = getSqrtPriceFromPrice(initialPrice.toString(), tokenADecimals, tokenBDecimals);
+    
+    const depositQuote = cpAmm.getDepositQuote({
+      inAmount: new BN(tokenAAmount),
+      isTokenA: true,
+      minSqrtPrice: new BN(1),
+      maxSqrtPrice: new BN('340282366920938463463374607431768211455'),
+      sqrtPrice,
+    });
+    
+    const { ata: userTokenAAta, tokenProgram: tokenAProgram } = await getAssociatedTokenAddressForMint(tokenA, user);
+    const { ata: userTokenBAta, tokenProgram: tokenBProgram } = await getAssociatedTokenAddressForMint(tokenB, user);
+    
+    const createAtaInstructions = [
+      createAtaInstructionForMint(user, userTokenAAta, user, tokenA, tokenAProgram),
+      createAtaInstructionForMint(user, userTokenBAta, user, tokenB, tokenBProgram),
+    ];
+    
+    const tx: Transaction = await cpAmm.createPool({
+      payer: user,
+      creator: user,
+      config: METEORA_STANDARD_CONFIG,
+      positionNft: positionNftPubkey,
+      tokenAMint: tokenA,
+      tokenBMint: tokenB,
+      activationPoint: null,
+      tokenAAmount: new BN(tokenAAmount),
+      tokenBAmount: new BN(tokenBAmount),
+      initSqrtPrice: sqrtPrice,
+      liquidityDelta: depositQuote.liquidityDelta,
+      tokenAProgram: tokenAProgram,
+      tokenBProgram: tokenBProgram,
+      isLockLiquidity: lockLiquidity,
+    });
+    
+    tx.instructions = [...createAtaInstructions, ...tx.instructions];
+    
+    const serializedTx = await serializeTransaction(tx, user, [positionNftMint]);
+    
+    const poolAddress = derivePoolAddress(METEORA_STANDARD_CONFIG, tokenA, tokenB);
+    
+    return {
+      success: true,
+      transaction: serializedTx,
+      poolAddress: poolAddress.toBase58(),
+      positionAddress: positionNftPubkey.toBase58(),
+      positionNftMint: positionNftPubkey.toBase58(),
+      needsClientSigning: false,
+      error: null,
+    };
+  } catch (error) {
+    console.error('Error building create pool transaction:', error);
+    return {
+      success: false,
+      transaction: null,
+      poolAddress: null,
+      positionAddress: null,
+      needsClientSigning: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    };
+  }
+}
+
+/**
+ * Build transactions to add liquidity to existing pool
+ */
+export async function buildAddLiquidityTransaction(
+  poolAddress: string,
+  tokenAMint: string,
+  tokenBMint: string,
+  tokenAAmount: string,
+  tokenBAmount: string,
+  userPublicKey: string,
+  slippageBps: number = 100
+): Promise<{
+  success: boolean;
+  transactions: string[];
+  positionAddress: string | null;
+  positionNftMint?: string;
+  liquidityDelta?: string;
+  error: string | null;
+}> {
+  try {
+    const cpAmm = getCpAmm();
+    
+    const user = new PublicKey(userPublicKey);
+    const pool = new PublicKey(poolAddress);
+    
+    const poolState = await cpAmm.fetchPoolState(pool);
+    if (!poolState) {
+      return {
+        success: false,
+        transactions: [],
+        positionAddress: null,
+        error: 'Pool not found',
+      };
+    }
+    
+    const tokenA = poolState.tokenAMint;
+    const tokenB = poolState.tokenBMint;
+    
+    const inputTokenA = new PublicKey(tokenAMint);
+    const isTokenOrderMatched = tokenA.equals(inputTokenA);
+    
+    const actualTokenAAmount = isTokenOrderMatched ? tokenAAmount : tokenBAmount;
+    const actualTokenBAmount = isTokenOrderMatched ? tokenBAmount : tokenAAmount;
+    
+    const { ata: userTokenAAta, tokenProgram: tokenAProgram } = await getAssociatedTokenAddressForMint(tokenA, user);
+    const { ata: userTokenBAta, tokenProgram: tokenBProgram } = await getAssociatedTokenAddressForMint(tokenB, user);
+    
+    const createAtaInstructions = [
+      createAtaInstructionForMint(user, userTokenAAta, user, tokenA, tokenAProgram),
+      createAtaInstructionForMint(user, userTokenBAta, user, tokenB, tokenBProgram),
+    ];
+    
+    const transactions: string[] = [];
+    const positionNftMint = Keypair.generate();
+    const positionNftMintPubkey = positionNftMint.publicKey;
+    
+    const positionAddress = derivePositionAddress(positionNftMintPubkey);
+    const positionNftAccount = derivePositionNftAccount(positionNftMintPubkey);
+    
+    console.log('Position NFT mint:', positionNftMintPubkey.toBase58());
+    console.log('Position PDA:', positionAddress.toBase58());
+    
+    const createPositionTx: Transaction = await cpAmm.createPosition({
+      owner: user,
+      payer: user,
+      pool,
+      positionNft: positionNftMintPubkey,
+    });
+    
+    createPositionTx.instructions = [...createAtaInstructions, ...createPositionTx.instructions];
+    
+    const serializedCreateTx = await serializeTransaction(createPositionTx, user, [positionNftMint]);
+    transactions.push(serializedCreateTx);
+    
+    const tokenAAmountBN = new BN(actualTokenAAmount);
+    const tokenBAmountBN = new BN(actualTokenBAmount);
+    
+    let depositQuote = cpAmm.getDepositQuote({
+      inAmount: tokenAAmountBN,
+      isTokenA: true,
+      minSqrtPrice: poolState.sqrtMinPrice,
+      maxSqrtPrice: poolState.sqrtMaxPrice,
+      sqrtPrice: poolState.sqrtPrice,
+    });
+    
+    let useTokenAAsInput = true;
+    if (depositQuote.outputAmount.gt(tokenBAmountBN)) {
+      depositQuote = cpAmm.getDepositQuote({
+        inAmount: tokenBAmountBN,
+        isTokenA: false,
+        minSqrtPrice: poolState.sqrtMinPrice,
+        maxSqrtPrice: poolState.sqrtMaxPrice,
+        sqrtPrice: poolState.sqrtPrice,
+      });
+      useTokenAAsInput = false;
+      
+      if (depositQuote.outputAmount.gt(tokenAAmountBN)) {
+        throw new Error(`Insufficient token balances for LP deposit`);
+      }
+    }
+    
+    const slippageMultiplier = 10000 + slippageBps;
+    let maxTokenA: BN, maxTokenB: BN, thresholdA: BN, thresholdB: BN;
+    
+    if (useTokenAAsInput) {
+      maxTokenA = depositQuote.consumedInputAmount.mul(new BN(slippageMultiplier)).div(new BN(10000));
+      maxTokenB = depositQuote.outputAmount.mul(new BN(slippageMultiplier)).div(new BN(10000));
+      thresholdA = depositQuote.consumedInputAmount;
+      thresholdB = depositQuote.outputAmount;
+    } else {
+      maxTokenB = depositQuote.consumedInputAmount.mul(new BN(slippageMultiplier)).div(new BN(10000));
+      maxTokenA = depositQuote.outputAmount.mul(new BN(slippageMultiplier)).div(new BN(10000));
+      thresholdB = depositQuote.consumedInputAmount;
+      thresholdA = depositQuote.outputAmount;
+    }
+    
+    const addLiquidityTx: Transaction = await cpAmm.addLiquidity({
+      owner: user,
+      pool,
+      position: positionAddress,
+      positionNftAccount,
+      liquidityDelta: depositQuote.liquidityDelta,
+      maxAmountTokenA: maxTokenA,
+      maxAmountTokenB: maxTokenB,
+      tokenAAmountThreshold: thresholdA,
+      tokenBAmountThreshold: thresholdB,
+      tokenAMint: tokenA,
+      tokenBMint: tokenB,
+      tokenAVault: poolState.tokenAVault,
+      tokenBVault: poolState.tokenBVault,
+      tokenAProgram: tokenAProgram,
+      tokenBProgram: tokenBProgram,
+    });
+    
+    const serializedAddLiqTx = await serializeTransaction(addLiquidityTx, user);
+    transactions.push(serializedAddLiqTx);
+    
+    return {
+      success: true,
+      transactions,
+      positionAddress: positionAddress.toBase58(),
+      positionNftMint: positionNftMint.publicKey.toBase58(),
+      liquidityDelta: depositQuote.liquidityDelta.toString(),
+      error: null,
+    };
+  } catch (error) {
+    console.error('Error building add liquidity transaction:', error);
+    return {
+      success: false,
+      transactions: [],
+      positionAddress: null,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    };
+  }
+}
+
+/**
+ * Build transaction to permanently lock LP position
+ */
+export async function buildLockPositionTransaction(
+  poolAddress: string,
+  positionAddress: string,
+  positionLiquidity: string,
+  userPublicKey: string
+): Promise<{
+  success: boolean;
+  transaction: string | null;
+  error: string | null;
+}> {
+  try {
+    const cpAmm = getCpAmm();
+    
+    const user = new PublicKey(userPublicKey);
+    const pool = new PublicKey(poolAddress);
+    const position = new PublicKey(positionAddress);
+    
+    const positionState = await cpAmm.fetchPositionState(position);
+    if (!positionState) {
+      return {
+        success: false,
+        transaction: null,
+        error: 'Position not found',
+      };
+    }
+    
+    const positionNftAccount = derivePositionNftAccount(positionState.nftMint);
+    
+    const tx: Transaction = await cpAmm.permanentLockPosition({
+      owner: user,
+      pool,
+      position,
+      positionNftAccount,
+      unlockedLiquidity: new BN(positionLiquidity),
+    });
+    
+    const serializedTx = await serializeTransaction(tx, user);
+    
+    return {
+      success: true,
+      transaction: serializedTx,
+      error: null,
+    };
+  } catch (error) {
+    console.error('Error building lock position transaction:', error);
+    return {
+      success: false,
+      transaction: null,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    };
+  }
+}
+
+/**
+ * Combined function: Find or create pool, add liquidity, optionally lock
+ */
+export async function buildLiquidityProvisioningTransactions(
+  tokenAMint: string,
+  tokenBMint: string,
+  tokenAAmount: string,
+  tokenBAmount: string,
+  userPublicKey: string,
+  lockLiquidity: boolean = false,
+  positionNftMintStr?: string
+): Promise<{
+  success: boolean;
+  transactions: string[];
+  poolAddress: string | null;
+  positionAddress: string | null;
+  positionNftMint?: string;
+  liquidityDelta?: string;
+  isNewPool: boolean;
+  error: string | null;
+  needsPositionSigner: boolean;
+}> {
+  const startTime = Date.now();
+  console.log('=== buildLiquidityProvisioningTransactions START ===');
+  
+  try {
+    const poolInfo = await findPool(tokenAMint, tokenBMint);
+    
+    if (poolInfo.exists && poolInfo.poolAddress) {
+      console.log('Pool exists, building add liquidity transactions...');
+      
+      const addLiqResult = await buildAddLiquidityTransaction(
+        poolInfo.poolAddress,
+        tokenAMint,
+        tokenBMint,
+        tokenAAmount,
+        tokenBAmount,
+        userPublicKey,
+        5000
+      );
+      
+      if (!addLiqResult.success || addLiqResult.transactions.length === 0) {
+        return {
+          success: false,
+          transactions: [],
+          poolAddress: poolInfo.poolAddress,
+          positionAddress: null,
+          isNewPool: false,
+          error: addLiqResult.error || 'Failed to build add liquidity transactions',
+          needsPositionSigner: false,
+        };
+      }
+      
+      return {
+        success: true,
+        transactions: [...addLiqResult.transactions],
+        poolAddress: poolInfo.poolAddress,
+        positionAddress: addLiqResult.positionAddress,
+        positionNftMint: addLiqResult.positionNftMint,
+        liquidityDelta: addLiqResult.liquidityDelta,
+        isNewPool: false,
+        error: null,
+        needsPositionSigner: false,
+      };
+    } else {
+      console.log('Pool does not exist, creating new pool...');
+      
+      const tokenADecimals = await getTokenDecimals(new PublicKey(tokenAMint));
+      const tokenBDecimals = await getTokenDecimals(new PublicKey(tokenBMint));
+      
+      const tokenAAmountNum = parseFloat(tokenAAmount) / Math.pow(10, tokenADecimals);
+      const tokenBAmountNum = parseFloat(tokenBAmount) / Math.pow(10, tokenBDecimals);
+      const initialPrice = tokenBAmountNum / tokenAAmountNum;
+      
+      const createPoolResult = await buildCreatePoolTransaction(
+        tokenAMint,
+        tokenBMint,
+        tokenAAmount,
+        tokenBAmount,
+        userPublicKey,
+        initialPrice,
+        lockLiquidity
+      );
+      
+      if (!createPoolResult.success || !createPoolResult.transaction) {
+        return {
+          success: false,
+          transactions: [],
+          poolAddress: null,
+          positionAddress: null,
+          isNewPool: true,
+          error: createPoolResult.error || 'Failed to build create pool transaction',
+          needsPositionSigner: false,
+        };
+      }
+      
+      return {
+        success: true,
+        transactions: [createPoolResult.transaction],
+        poolAddress: createPoolResult.poolAddress,
+        positionAddress: createPoolResult.positionAddress,
+        positionNftMint: createPoolResult.positionNftMint,
+        isNewPool: true,
+        error: null,
+        needsPositionSigner: false,
+      };
+    }
+  } catch (error) {
+    const elapsed = Date.now() - startTime;
+    console.error('=== buildLiquidityProvisioningTransactions ERROR ===');
+    console.error('Error:', error);
+    
+    return {
+      success: false,
+      transactions: [],
+      poolAddress: null,
+      positionAddress: null,
+      isNewPool: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+      needsPositionSigner: false,
+    };
+  }
+}
+
+export { connection, derivePositionAddress, derivePositionNftAccount };
