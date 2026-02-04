@@ -1,0 +1,165 @@
+/**
+ * Database Module
+ * Connects to the same Manus database for transaction tracking
+ */
+
+import { eq, sql, and, or, lt, asc, ne, isNull, lte, desc } from "drizzle-orm";
+import { drizzle } from "drizzle-orm/mysql2";
+import { 
+  mysqlTable, 
+  int, 
+  varchar, 
+  text, 
+  timestamp, 
+  boolean, 
+  mysqlEnum 
+} from "drizzle-orm/mysql-core";
+
+// Define the processedIncoming table schema (same as Manus)
+export const processedIncoming = mysqlTable("processed_incoming", {
+  id: int("id").autoincrement().primaryKey(),
+  incomingSignature: varchar("incomingSignature", { length: 128 }).notNull().unique(),
+  senderAddress: varchar("senderAddress", { length: 64 }).notNull(),
+  amountLamports: varchar("amountLamports", { length: 64 }).notNull(),
+  status: mysqlEnum("status", ["pending", "processing", "completed", "failed"]).default("pending").notNull(),
+  errorMessage: text("errorMessage"),
+  proofSwapSignature: varchar("proofSwapSignature", { length: 128 }),
+  trendingSwapSignature: varchar("trendingSwapSignature", { length: 128 }),
+  trendingTokenMint: varchar("trendingTokenMint", { length: 64 }),
+  trendingTokenSymbol: varchar("trendingTokenSymbol", { length: 20 }),
+  poolAddress: varchar("poolAddress", { length: 64 }),
+  positionAddress: varchar("positionAddress", { length: 64 }),
+  isNewPool: boolean("isNewPool"),
+  positionNftMint: varchar("positionNftMint", { length: 64 }),
+  nftTransferSignature: varchar("nftTransferSignature", { length: 128 }),
+  retryCount: int("retryCount").default(0).notNull(),
+  lastRetryAt: timestamp("lastRetryAt"),
+  nextRetryAt: timestamp("nextRetryAt"),
+  currentStep: mysqlEnum("currentStep", ["check_pool", "swap_proof", "swap_trending", "create_pool", "lock_lp", "transfer_nft", "done"]).default("check_pool"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  completedAt: timestamp("completedAt"),
+});
+
+export type ProcessedIncoming = typeof processedIncoming.$inferSelect;
+export type InsertProcessedIncoming = typeof processedIncoming.$inferInsert;
+
+let _db: ReturnType<typeof drizzle> | null = null;
+
+export async function getDb() {
+  if (!_db && process.env.DATABASE_URL) {
+    try {
+      _db = drizzle(process.env.DATABASE_URL);
+      console.log('[Database] Connected successfully');
+    } catch (error) {
+      console.warn("[Database] Failed to connect:", error);
+      _db = null;
+    }
+  }
+  return _db;
+}
+
+export async function isTransactionProcessed(signature: string): Promise<boolean> {
+  const db = await getDb();
+  if (!db) return false;
+  const result = await db.select().from(processedIncoming)
+    .where(eq(processedIncoming.incomingSignature, signature))
+    .limit(1);
+  return result.length > 0;
+}
+
+export async function insertProcessedIncoming(record: InsertProcessedIncoming): Promise<void> {
+  const db = await getDb();
+  if (!db) {
+    console.warn("[Database] Cannot insert processed incoming: database not available");
+    return;
+  }
+  await db.insert(processedIncoming).values(record);
+}
+
+export async function updateProcessedIncoming(
+  signature: string,
+  updates: Partial<InsertProcessedIncoming>
+): Promise<void> {
+  const db = await getDb();
+  if (!db) {
+    console.warn("[Database] Cannot update processed incoming: database not available");
+    return;
+  }
+  await db.update(processedIncoming)
+    .set(updates)
+    .where(eq(processedIncoming.incomingSignature, signature));
+}
+
+export async function getProcessedIncoming(limit: number = 100) {
+  const db = await getDb();
+  if (!db) return [];
+  return db.select().from(processedIncoming)
+    .orderBy(desc(processedIncoming.createdAt))
+    .limit(limit);
+}
+
+export async function getProcessedIncomingBySignature(signature: string) {
+  const db = await getDb();
+  if (!db) return null;
+  const [result] = await db.select().from(processedIncoming)
+    .where(eq(processedIncoming.incomingSignature, signature))
+    .limit(1);
+  return result || null;
+}
+
+export async function getTransactionsForRetry(limit: number = 10) {
+  const db = await getDb();
+  if (!db) return [];
+  
+  const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
+  const now = new Date();
+  
+  return db.select().from(processedIncoming)
+    .where(
+      or(
+        and(
+          eq(processedIncoming.status, 'failed'),
+          lt(processedIncoming.retryCount, 5)
+        ),
+        and(
+          eq(processedIncoming.status, 'processing'),
+          lt(processedIncoming.createdAt, fiveMinutesAgo)
+        ),
+        and(
+          eq(processedIncoming.status, 'pending'),
+          ne(processedIncoming.currentStep, 'done'),
+          or(
+            isNull(processedIncoming.nextRetryAt),
+            lte(processedIncoming.nextRetryAt, now)
+          )
+        )
+      )
+    )
+    .orderBy(asc(processedIncoming.retryCount), asc(processedIncoming.createdAt))
+    .limit(limit);
+}
+
+export async function markForRetry(signature: string, errorMessage: string): Promise<void> {
+  const db = await getDb();
+  if (!db) return;
+  
+  const [existing] = await db.select().from(processedIncoming)
+    .where(eq(processedIncoming.incomingSignature, signature))
+    .limit(1);
+  
+  if (!existing) return;
+  
+  const newRetryCount = (existing.retryCount || 0) + 1;
+  const backoffMs = Math.min(1000 * Math.pow(2, newRetryCount), 60000);
+  const nextRetryAt = new Date(Date.now() + backoffMs);
+  
+  await db.update(processedIncoming)
+    .set({
+      status: 'failed',
+      errorMessage,
+      retryCount: newRetryCount,
+      lastRetryAt: new Date(),
+      nextRetryAt,
+    })
+    .where(eq(processedIncoming.incomingSignature, signature));
+}
