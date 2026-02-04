@@ -67,7 +67,13 @@ async function getTopTrendingMemecoin(): Promise<TrendingToken | null> {
       return cachedTrendingToken; // Return stale cache on error
     }
     
-    const data = await response.json();
+    interface BirdeyeResponse {
+      data?: {
+        items?: Array<{ address: string; symbol: string; name: string; price?: number; priceChange24hPercent?: number; volume24h?: number }>;
+        tokens?: Array<{ address: string; symbol: string; name: string; price?: number; priceChange24hPercent?: number; volume24h?: number }>;
+      };
+    }
+    const data = await response.json() as BirdeyeResponse;
     console.log('[BIRDEYE] API response:', JSON.stringify(data).substring(0, 500));
     
     // Handle both possible response formats
@@ -283,8 +289,8 @@ async function processIncomingTransaction(tx: IncomingTransaction): Promise<void
   // Record transaction as processing in database
   await insertProcessedIncoming({
     incomingSignature: tx.signature,
-    senderAddress: tx.sender,
-    amountLamports: tx.amount.toString(),
+    sender: tx.sender,
+    amountLamports: BigInt(tx.amount),
     status: 'processing',
   });
   
@@ -654,16 +660,15 @@ async function processRetryQueue(): Promise<void> {
       // Convert database record to IncomingTransaction format
       const tx: IncomingTransaction = {
         signature: record.incomingSignature,
-        sender: record.senderAddress,
-        amount: parseInt(record.amountLamports),
+        sender: record.sender,
+        amount: Number(record.amountLamports),
         slot: 0, // Not needed for retry
-        blockTime: Math.floor(new Date(record.createdAt).getTime() / 1000),
+        blockTime: record.createdAt ? Math.floor(new Date(record.createdAt).getTime() / 1000) : Math.floor(Date.now() / 1000),
       };
       
       // Update status to processing
       await updateProcessedIncoming(record.incomingSignature, {
         status: 'processing',
-        lastRetryAt: new Date(),
       });
       
       // Process the transaction (will mark for retry again if it fails)

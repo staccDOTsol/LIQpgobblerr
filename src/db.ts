@@ -146,7 +146,7 @@ export async function markForRetry(signature: string, error: string): Promise<vo
 /**
  * Get transactions that need retry
  */
-export async function getTransactionsForRetry(): Promise<SelectProcessedIncoming[]> {
+export async function getTransactionsForRetry(limit: number = 10): Promise<SelectProcessedIncoming[]> {
   const db = await getDb();
   if (!db) return [];
   
