@@ -808,9 +808,10 @@ async function processIncomingTransactionRetry(
       console.log(`[RETRY] Skipping swap_trending - already completed`);
     }
     
-    // ========== STEP 3: Create/add to pool ==========
+    // ========== STEP 3: Create/add to pool with ATOMIC transaction ==========
+    // This bundles: Create Position + Add Liquidity + Lock + Transfer NFT in ONE tx
     if (shouldRunStep('create_pool')) {
-      console.log('[RETRY] Step 3: Creating/adding to pool...');
+      console.log('[RETRY] Step 3: Building atomic LP transaction (create+add+lock+transfer)...');
       await updateProcessedIncoming(tx.signature, { currentStep: 'create_pool' });
       
       const proofBalance = await getTokenBalance(wallet.publicKey, new PublicKey(tokenAMint));
@@ -822,44 +823,109 @@ async function processIncomingTransactionRetry(
         throw new Error(`Insufficient token balances: PROOF=${proofBalance}, ${trendingSymbol}=${trendingBalance}`);
       }
       
-      const lpResult = await buildLiquidityProvisioningTransactions(
+      // Check if pool exists
+      const poolInfo = await findPool(tokenAMint, tokenBMint);
+      
+      if (!poolInfo.exists || !poolInfo.poolAddress) {
+        // Need to create pool - use ATOMIC pool creation
+        console.log('[RETRY] Pool does not exist, building atomic pool creation transaction...');
+        
+        const atomicPoolResult = await buildAtomicPoolCreationTransaction(
+          tokenAMint,
+          tokenBMint,
+          proofBalance.toString(),
+          trendingBalance.toString(),
+          wallet,
+          tx.sender // Recipient of the NFT = sender of SOL
+        );
+        
+        if (!atomicPoolResult.success || !atomicPoolResult.transaction) {
+          throw new Error(`Atomic pool creation failed: ${atomicPoolResult.error}`);
+        }
+        
+        console.log(`[RETRY] Atomic pool tx built - Pool: ${atomicPoolResult.poolAddress}, Position: ${atomicPoolResult.positionAddress}, NFT: ${atomicPoolResult.positionNftMint}`);
+        
+        // Submit the atomic transaction
+        const submitResult = await submitAtomicTransaction(atomicPoolResult.transaction);
+        
+        if (!submitResult.success) {
+          throw new Error(`Atomic pool tx failed: ${submitResult.error}`);
+        }
+        
+        console.log(`[RETRY] ✅ Atomic pool creation confirmed: ${submitResult.signature}`);
+        console.log(`[RETRY] Pool created, locked, and NFT transferred to ${tx.sender}`);
+        
+        // Update database with success - mark as DONE since NFT transfer is included
+        await updateProcessedIncoming(tx.signature, {
+          status: 'completed',
+          currentStep: 'done',
+          trendingTokenMint: tokenBMint,
+          trendingTokenSymbol: trendingSymbol,
+          poolAddress: atomicPoolResult.poolAddress || undefined,
+          positionAddress: atomicPoolResult.positionAddress || undefined,
+          positionNftMint: atomicPoolResult.positionNftMint || undefined,
+          isNewPool: true,
+          completedAt: new Date(),
+        });
+        
+        console.log(`[RETRY] ✅ Completed (new pool - atomic) tx ${tx.signature}`);
+        return; // Done! NFT transfer was included in atomic tx
+      }
+      
+      // Pool exists - use atomic LP transaction
+      const poolAddress = poolInfo.poolAddress;
+      console.log(`[RETRY] Pool exists: ${poolAddress}`);
+      
+      const atomicResult = await buildAtomicLPTransaction(
+        poolAddress,
         tokenAMint,
         tokenBMint,
         proofBalance.toString(),
         trendingBalance.toString(),
-        wallet.publicKey.toBase58(),
-        true,
-        undefined
+        wallet,
+        tx.sender, // Recipient of the NFT
+        5000 // 50% slippage for LP
       );
       
-      if (!lpResult.success || lpResult.transactions.length === 0) {
-        throw new Error(`LP transactions failed: ${lpResult.error}`);
+      if (!atomicResult.success || !atomicResult.transaction) {
+        throw new Error(`Atomic LP failed: ${atomicResult.error}`);
       }
       
-      console.log(`[RETRY] Got ${lpResult.transactions.length} LP transactions`);
+      console.log(`[RETRY] Atomic tx built - Position: ${atomicResult.positionAddress}, NFT: ${atomicResult.positionNftMint}`);
       
-      for (let i = 0; i < lpResult.transactions.length; i++) {
-        const txBase64 = lpResult.transactions[i];
-        const lpTx = VersionedTransaction.deserialize(Buffer.from(txBase64, 'base64'));
-        lpTx.sign([wallet]);
-        const sig = await connection.sendTransaction(lpTx, { skipPreflight: true });
-        await connection.confirmTransaction(sig, 'confirmed');
-        console.log(`[RETRY] LP tx ${i + 1}/${lpResult.transactions.length} confirmed: ${sig}`);
+      // Submit the atomic transaction
+      const submitResult = await submitAtomicTransaction(atomicResult.transaction);
+      
+      if (!submitResult.success) {
+        throw new Error(`Atomic tx failed: ${submitResult.error}`);
       }
       
+      console.log(`[RETRY] ✅ Atomic transaction confirmed: ${submitResult.signature}`);
+      console.log(`[RETRY] Position created, locked, and NFT transferred to ${tx.sender}`);
+      
+      // Update database with success - mark as DONE since NFT transfer is included
       await updateProcessedIncoming(tx.signature, {
-        poolAddress: lpResult.poolAddress || undefined,
-        positionAddress: lpResult.positionAddress || undefined,
-        positionNftMint: lpResult.positionNftMint || undefined,
-        isNewPool: lpResult.isNewPool,
+        status: 'completed',
+        currentStep: 'done',
+        trendingTokenMint: tokenBMint,
+        trendingTokenSymbol: trendingSymbol,
+        poolAddress: poolAddress,
+        positionAddress: atomicResult.positionAddress || undefined,
+        positionNftMint: atomicResult.positionNftMint || undefined,
+        isNewPool: false,
+        completedAt: new Date(),
       });
+      
+      console.log(`[RETRY] ✅ Completed (existing pool - atomic) tx ${tx.signature}`);
+      return; // Done! NFT transfer was included in atomic tx
     } else {
       console.log(`[RETRY] Skipping create_pool - already completed`);
     }
     
-    // ========== STEP 4: Transfer NFT to sender ==========
+    // ========== STEP 4: Transfer NFT to sender (only if not done atomically) ==========
+    // This step is now a fallback - atomic transactions above include NFT transfer
     if (shouldRunStep('transfer_nft')) {
-      console.log('[RETRY] Step 4: Transferring NFT to sender...');
+      console.log('[RETRY] Step 4: Transferring NFT to sender (fallback)...');
       await updateProcessedIncoming(tx.signature, { currentStep: 'transfer_nft' });
       
       const updatedRecord = await getProcessedIncomingBySignature(tx.signature);
