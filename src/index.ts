@@ -7,3 +7,4 @@ startAutoTrader().catch((error) => {
   console.error('Failed to start auto-trader:', error);
   process.exit(1);
 });
+// Force rebuild Wed Feb  4 10:57:23 EST 2026
