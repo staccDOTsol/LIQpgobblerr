@@ -1,9 +1,9 @@
-import { startAutoTrader } from './auto-trader';
+import { startAutoTrader } from './auto-trader.js';
 
-console.log('🚀 Starting Liquidity Monster Auto-Trader...');
-console.log('');
+console.log('Starting Auto-Trader for Railway deployment...');
+console.log('System wallet: BzJR5q8YRs2KSXcQU7w9u29okrziU5bQ2oCVECC6CukE');
 
-startAutoTrader().catch((err) => {
-  console.error('Fatal error:', err);
+startAutoTrader().catch((error) => {
+  console.error('Failed to start auto-trader:', error);
   process.exit(1);
 });

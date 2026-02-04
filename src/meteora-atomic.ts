@@ -16,8 +16,7 @@ import { derivePositionAddress, derivePositionNftAccount } from '@meteora-ag/cp-
 import { getCpAmm, getAssociatedTokenAddressForMint, createAtaInstructionForMint } from './meteora-damm.js';
 
 // Use the same connection as meteora-damm
-const HELIUS_API_KEY = process.env.HELIUS_API_KEY || '0d4b4fd6-c2fc-4f55-b615-a23bab1ffc85';
-const HELIUS_RPC_URL = `https://mainnet.helius-rpc.com/?api-key=${HELIUS_API_KEY}`;
+const HELIUS_RPC_URL = 'https://mainnet.helius-rpc.com/?api-key=0d4b4fd6-c2fc-4f55-b615-a23bab1ffc85';
 const connection = new Connection(HELIUS_RPC_URL, 'confirmed');
 
 interface AtomicLPResult {
