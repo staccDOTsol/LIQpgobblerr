@@ -13,7 +13,7 @@ export const processedIncoming = mysqlTable('processed_incoming', {
   amountLamports: varchar('amountLamports', { length: 64 }).notNull(),
   status: mysqlEnum('status', ['pending', 'processing', 'completed', 'failed']).default('pending'),
   errorMessage: text('errorMessage'),
-  currentStep: mysqlEnum('currentStep', ['check_pool', 'swap_proof', 'swap_trending', 'create_pool', 'lock_lp', 'transfer_nft', 'done']).default('check_pool'),
+  currentStep: mysqlEnum('currentStep', ['check_pool', 'swap_proof', 'swap_trending', 'swap_rfreestacc', 'swap_leading', 'add_liquidity', 'burn_tokens', 'transfer_lp', 'create_pool', 'lock_lp', 'transfer_nft', 'done']).default('check_pool'),
   retryCount: int('retryCount').default(0),
   
   // Token info
@@ -173,4 +173,58 @@ export async function getRecentProcessedIncoming(limit: number = 50): Promise<Se
   return db.select().from(processedIncoming)
     .orderBy(desc(processedIncoming.createdAt))
     .limit(limit);
+}
+
+// ============ Tracked Raydium Pools ============
+
+export const trackedRaydiumPools = mysqlTable('tracked_raydium_pools', {
+  id: int('id').autoincrement().primaryKey(),
+  poolAddress: varchar('poolAddress', { length: 64 }).notNull().unique(),
+  tokenMint: varchar('tokenMint', { length: 64 }).notNull(),
+  tokenSymbol: varchar('tokenSymbol', { length: 20 }),
+  solPerHour: varchar('solPerHour', { length: 64 }),
+  totalSolVolume: varchar('totalSolVolume', { length: 64 }),
+  lastUpdated: timestamp('lastUpdated').defaultNow(),
+  createdAt: timestamp('createdAt').defaultNow(),
+});
+
+export type InsertTrackedRaydiumPool = typeof trackedRaydiumPools.$inferInsert;
+
+export async function insertTrackedPool(pool: InsertTrackedRaydiumPool): Promise<void> {
+  const db = await getDb();
+  if (!db) return;
+  await db.insert(trackedRaydiumPools).values(pool).onDuplicateKeyUpdate({
+    set: {
+      solPerHour: pool.solPerHour,
+      totalSolVolume: pool.totalSolVolume,
+      lastUpdated: new Date(),
+    },
+  });
+}
+
+export async function updateTrackedPoolVolume(
+  poolAddress: string,
+  solPerHour: string,
+  totalSolVolume: string,
+): Promise<void> {
+  const db = await getDb();
+  if (!db) return;
+  await db.update(trackedRaydiumPools)
+    .set({ solPerHour, totalSolVolume, lastUpdated: new Date() })
+    .where(eq(trackedRaydiumPools.poolAddress, poolAddress));
+}
+
+export async function getTrackedPools(limit: number = 100) {
+  const db = await getDb();
+  if (!db) return [];
+  return db.select().from(trackedRaydiumPools)
+    .orderBy(desc(trackedRaydiumPools.solPerHour))
+    .limit(limit);
+}
+
+export async function deleteTrackedPool(poolAddress: string): Promise<void> {
+  const db = await getDb();
+  if (!db) return;
+  await db.delete(trackedRaydiumPools)
+    .where(eq(trackedRaydiumPools.poolAddress, poolAddress));
 }
